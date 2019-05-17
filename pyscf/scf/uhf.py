@@ -253,8 +253,41 @@ def get_occ(mf, mo_energy=None, mo_coeff=None):
     nmo = mo_energy[0].size
     n_a, n_b = mf.nelec
     mo_occ = numpy.zeros_like(mo_energy)
-    mo_occ[0,e_idx_a[:n_a]] = 1
-    mo_occ[1,e_idx_b[:n_b]] = 1
+
+    # MP 2019
+    if not mf.mol.smearing:
+        print("Aufbau case")
+        mo_occ[0,e_idx_a[:n_a]] = 1
+        mo_occ[1,e_idx_b[:n_b]] = 1
+    else:
+        print("Smearing case")
+        if mf.verbose >= logger.INFO:
+            logger.warn(mf, "WARNING: experimental, use at your own risk")
+        mf.mol.FermiEnergy = numpy.zeros(2)
+        mf.mol.FermiEnergy[0] = mo_energy[0,e_idx_a[n_a]] 
+        mf.mol.FermiEnergy[1] = mo_energy[1,e_idx_b[n_b]] 
+        from pyscf.scf.addons import fermi_smearing_mo_occ
+        def nelec_cost_fn_a(e_f):
+            mo_occ[0,:] = fermi_smearing_mo_occ(e_f, mo_energy[0,:], mf.mol.tau)*2
+            nelec = numpy.sum(mo_occ[0,:])
+            return (nelec - n_a)**2
+        def nelec_cost_fn_b(e_f):
+            mo_occ[1,:] = fermi_smearing_mo_occ(e_f, mo_energy[1,:], mf.mol.tau)*2
+            nelec = numpy.sum(mo_occ[1,:])
+            return (nelec - n_b)**2
+
+        res = scipy.optimize.minimize(nelec_cost_fn_a, mf.mol.FermiEnergy[0], method='Powell', options={'maxiter': 2000})
+        mf.mol.FermiEnergy[0] = res.x
+        res = scipy.optimize.minimize(nelec_cost_fn_b, mf.mol.FermiEnergy[1], method='Powell', options={'maxiter': 2000})
+        mf.mol.FermiEnergy[1] = res.x
+
+        mo_occ[0,:] = fermi_smearing_mo_occ(mf.mol.FermiEnergy[0], mo_energy[0,:], mf.mol.tau, elec)*2
+        mo_occ[1,:] = fermi_smearing_mo_occ(mf.mol.FermiEnergy[1], mo_energy[1,:], mf.mol.tau, elec)*2
+
+        if not numpy.isclose(numpy.sum(mo_occ),elec):
+            print('Fermi-Dirac did not converge. Try raising mol.tau.', nelec_cost_fn(mf.mol.FermiEnergy)) 
+
+
     if mf.verbose >= logger.INFO and n_a < nmo and n_b > 0 and n_b < nmo:
         if e_sort_a[n_a-1]+1e-3 > e_sort_a[n_a]:
             logger.warn(mf, 'alpha nocc = %d  HOMO %.15g >= LUMO %.15g',
